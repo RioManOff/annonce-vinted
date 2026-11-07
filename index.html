@@ -128,7 +128,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const DEFAULT_MODEL = 'gemini-2.5-flash';
-const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'];
 const MAX_PHOTOS = 20;
 let photos = []; // { name, full (dataURL 1600px), ai (base64 1024px) }
 
@@ -212,21 +212,21 @@ function setStatus(msg, isErr = false) { $('genStatus').textContent = msg; $('ge
 
 // ---------- IA ----------
 function buildPrompt(notes) {
-  return `Tu es un vendeur expert sur Vinted France. À partir des photos d'un article, rédige une annonce qui donne envie d'acheter.
+  return `Tu es un vendeur expert sur Vinted France. À partir des photos d'un article (vêtement, chaussures, carte à collectionner, jeu, objet, livre...), rédige une annonce qui donne envie d'acheter.
 
 Infos données par le vendeur (prioritaires sur ce que tu devines) : ${notes || 'aucune'}
 
 Réponds UNIQUEMENT avec un objet JSON avec ces clés :
-- "titre" : titre court et précis (max 60 caractères), type + marque + détail clé + taille si connue. Pas d'emoji.
-- "description" : 3 à 6 phrases en français naturel : ce que c'est, état réel (mentionne les défauts visibles), matière/coupe/détails, conseils (taille, entretien). Termine par une ligne de 3 à 5 hashtags pertinents.
+- "titre" : titre court et précis (max 60 caractères). Vêtement : type + marque + détail + taille. Carte à collectionner : nom de la carte + numéro + extension + langue si visibles (ex. "Carte Pokémon Dracaufeu ex 199/165 151 FR"). Pas d'emoji.
+- "description" : 3 à 6 phrases en français naturel : ce que c'est, état réel (défauts visibles : rayures, coins, taches...), détails utiles (matière/coupe pour un vêtement ; extension, numéro, rareté, langue, sleeve/toploader pour une carte), envoi soigné. Termine par une ligne de 3 à 5 hashtags pertinents.
 - "prix" : prix de vente conseillé en euros (nombre entier), réaliste pour l'occasion sur Vinted.
 - "prix_min" et "prix_max" : fourchette réaliste (nombres entiers).
-- "marque" : marque si visible ou reconnaissable, sinon "Sans marque".
-- "categorie" : chemin de catégorie Vinted, ex. "Femmes > Vêtements > Pulls & sweats > Sweats".
-- "taille" : taille si visible sur l'étiquette ou donnée par le vendeur, sinon "À vérifier".
+- "marque" : marque si visible ou reconnaissable (pour une carte : Pokémon, Dragon Ball Super Card Game, One Piece Card Game...), sinon "Sans marque".
+- "categorie" : chemin de catégorie Vinted, ex. "Femmes > Vêtements > Pulls & sweats" ou "Divertissement > Jeux et puzzles > Jeux de cartes".
+- "taille" : taille si visible ou donnée par le vendeur ; "Sans objet" pour une carte ou un objet ; sinon "À vérifier".
 - "etat" : exactement une de ces valeurs : "Neuf avec étiquette", "Neuf sans étiquette", "Très bon état", "Bon état", "Satisfaisant".
 - "couleur" : 1 ou 2 couleurs principales.
-- "matiere" : matière si visible sur l'étiquette, sinon "À vérifier".
+- "matiere" : matière si visible sur l'étiquette ; "Sans objet" pour une carte ; sinon "À vérifier".
 N'invente pas d'informations que tu ne vois pas : dans le doute, écris "À vérifier".`;
 }
 
@@ -254,6 +254,7 @@ function explainError(e) {
   const msg = e?.message || String(e);
   if (e?.status === 400 && /api key/i.test(msg)) return '❌ Clé Gemini invalide. Vérifie-la dans les réglages ⚙️';
   if (e?.status === 403) return '❌ Clé refusée par Google. Recrée une clé sur aistudio.google.com/apikey';
+  if (e?.status === 503 || e?.status === 500 || /high demand|overloaded/i.test(msg)) return '⏳ L\'IA de Google est surchargée en ce moment. Réessaie dans quelques minutes.';
   if (e?.status === 429) return '⏳ Quota gratuit atteint. Attends une minute (ou demain si c\'est le quota du jour).';
   if (e?.status === 404) return '❌ Modèle introuvable. Mets un autre modèle dans les réglages ⚙️';
   if (e instanceof SyntaxError) return '❌ Réponse de l\'IA mal formée, réessaie.';
@@ -268,16 +269,27 @@ $('btnGenerate').onclick = async () => {
   $('btnGenerate').disabled = true;
   setStatus('✨ L\'IA regarde tes photos…');
   let lastErr;
-  for (const m of models) {
-    try {
-      const ad = await callGemini(m, key, $('notes').value.trim());
-      if (m !== preferred) { $('model').value = m; store.set('model', m); }
-      showAd(ad); saveHistory(ad);
-      setStatus('✅ Annonce prête ! Vérifie-la ci-dessous.');
-      $('btnGenerate').disabled = false;
-      $('result').scrollIntoView({ behavior: 'smooth' });
-      return;
-    } catch (e) { lastErr = e; if (e.status !== 404) break; }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  outer: for (const m of models) {
+    for (let essai = 0; essai < 2; essai++) {
+      try {
+        const ad = await callGemini(m, key, $('notes').value.trim());
+        if (m !== preferred) { $('model').value = m; store.set('model', m); }
+        showAd(ad); saveHistory(ad);
+        setStatus('✅ Annonce prête ! Vérifie-la ci-dessous.');
+        $('btnGenerate').disabled = false;
+        $('result').scrollIntoView({ behavior: 'smooth' });
+        return;
+      } catch (e) {
+        lastErr = e;
+        const surcharge = [500, 503, 429].includes(e.status) || /high demand|overloaded|unavailable/i.test(e.message);
+        if (e.status === 404) continue outer;          // modèle inexistant → suivant
+        if (!surcharge) break outer;                    // vraie erreur (clé...) → on arrête
+        if (essai === 0) { setStatus('⏳ IA de Google surchargée, nouvel essai…'); await sleep(3000); continue; }
+        setStatus('⏳ IA surchargée, j\'essaie un autre modèle…');
+        continue outer;
+      }
+    }
   }
   $('btnGenerate').disabled = false;
   setStatus(explainError(lastErr), true);
