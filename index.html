@@ -106,11 +106,14 @@
 
 <section id="publish" class="card hidden">
   <h2><span class="num">3</span> Mettre sur Vinted</h2>
-  <button id="btnSavePhotos" class="btn secondary">💾 Enregistrer / partager les photos</button>
+  <div class="two">
+    <button id="btnDownload" class="btn secondary">⬇️ Enregistrer les photos</button>
+    <button id="btnShare" class="btn secondary">📤 Partager les photos</button>
+  </div>
   <button id="btnCopyAll" class="btn secondary">📋 Copier titre + description</button>
   <a class="btn primary" href="https://www.vinted.fr/items/new" target="_blank" rel="noopener">🚀 Ouvrir Vinted</a>
   <ol class="steps">
-    <li>Dans Vinted, ajoute les photos (elles sont en tête de ta galerie).</li>
+    <li>Dans Vinted, ajoute les photos : elles sont dans ta galerie, album « Download » / « Téléchargements ». (Ou essaie « Partager » → Vinted.)</li>
     <li>Colle le titre, la description et le prix (boutons « Copier »).</li>
     <li>Choisis catégorie, marque, taille, état comme indiqué ci-dessus.</li>
     <li>Appuie sur « Ajouter ».</li>
@@ -156,7 +159,14 @@ $('btnSaveSettings').onclick = () => {
   toast('Réglages enregistrés');
 };
 
-// ---------- photos ----------
+// ---------- photos (gardées même si la page se recharge) ----------
+const idb = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('annonce-vinted', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async set(k, v) { try { const db = await this.open(); db.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch {} },
+  async get(k) { try { const db = await this.open(); return await new Promise((res) => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => res(undefined); }); } catch { return undefined; } },
+};
+idb.get('photos').then((saved) => { if (Array.isArray(saved) && saved.length && !photos.length) { photos = saved; renderThumbs(false); } });
+
 $('btnCamera').onclick = () => $('camInput').click();
 $('btnGallery').onclick = () => $('galInput').click();
 $('camInput').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
@@ -191,7 +201,8 @@ async function addFiles(list) {
   renderThumbs();
 }
 
-function renderThumbs() {
+function renderThumbs(save = true) {
+  if (save) idb.set('photos', photos);
   const box = $('thumbs'); box.innerHTML = '';
   photos.forEach((p, i) => {
     const d = document.createElement('div'); d.className = 'thumb';
@@ -346,20 +357,27 @@ function dataUrlToFile(dataUrl, name) {
   return new File([bytes], name, { type: 'image/jpeg' });
 }
 
-$('btnSavePhotos').onclick = async () => {
-  if (!photos.length) { toast('Pas de photos (elles ne sont pas gardées après fermeture)'); return; }
-  const files = photos.map((p) => dataUrlToFile(p.full, p.name));
-  if (navigator.canShare && navigator.canShare({ files })) {
-    try { await navigator.share({ files, title: $('f_titre').value }); return; }
-    catch (e) { if (e.name === 'AbortError') return; }
-  }
-  // Sinon : téléchargement une par une
+function photoFiles() { return photos.map((p) => dataUrlToFile(p.full, p.name)); }
+
+$('btnDownload').onclick = async () => {
+  if (!photos.length) { toast('Aucune photo à enregistrer'); return; }
+  const files = photoFiles();
   for (const f of files) {
-    const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name;
+    const url = URL.createObjectURL(f);
+    const a = document.createElement('a'); a.href = url; a.download = f.name;
     document.body.appendChild(a); a.click(); a.remove();
-    await new Promise((r) => setTimeout(r, 300));
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    await new Promise((r) => setTimeout(r, 700));
   }
-  toast('Photos téléchargées');
+  toast(files.length > 1 ? `${files.length} photos enregistrées (autorise les téléchargements multiples si Chrome le demande)` : 'Photo enregistrée');
+};
+
+$('btnShare').onclick = async () => {
+  if (!photos.length) { toast('Aucune photo à partager'); return; }
+  const files = photoFiles();
+  if (!(navigator.canShare && navigator.canShare({ files }))) { toast('Partage impossible ici, utilise « Enregistrer »'); return; }
+  try { await navigator.share({ files }); }
+  catch (e) { if (e.name !== 'AbortError') toast('Partage refusé, utilise « Enregistrer »'); }
 };
 
 $('btnNew').onclick = () => {
