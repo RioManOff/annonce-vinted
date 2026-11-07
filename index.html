@@ -48,6 +48,8 @@
   .hist { list-style: none; padding: 0; margin: 0; }
   .hist li { display: flex; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eef2f3; font-size: 14px; }
   .hist li button { background: #e3f1f2; color: #007782; font-size: 13px; padding: 4px 10px; flex: none; }
+  .prov.on { background: #007782; color: #fff; }
+  .prov small { font-weight: 400; font-size: 12px; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #1d2b2f; color: #fff; padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
 </style>
@@ -60,12 +62,26 @@
 
 <section id="settings" class="card hidden">
   <h2>Réglages</h2>
-  <label>Clé Google Gemini (gratuite)
-    <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off">
-  </label>
-  <p class="hint">Crée-la sur <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> → « Create API key ». Elle reste enregistrée uniquement sur cet appareil.</p>
-  <label>Modèle d'IA <input id="model" type="text" placeholder="gemini-2.5-flash"></label>
-  <p class="hint">Laisse « gemini-2.5-flash » sauf si un message te dit que le modèle n'existe plus.</p>
+  <label>IA utilisée</label>
+  <div class="two">
+    <button class="btn secondary prov" data-prov="gemini">Gemini<br><small>gratuit</small></button>
+    <button class="btn secondary prov" data-prov="openai">GPT<br><small>payant, rapide</small></button>
+  </div>
+  <div id="geminiBox">
+    <label>Clé Google Gemini (gratuite)
+      <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off">
+    </label>
+    <p class="hint">Crée-la sur <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> → « Create API key ».</p>
+    <label>Modèle <input id="model" type="text" placeholder="gemini-2.5-flash"></label>
+  </div>
+  <div id="openaiBox" class="hidden">
+    <label>Clé OpenAI (GPT)
+      <input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off">
+    </label>
+    <p class="hint">Sur <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> → « Create new secret key ». Il faut d'abord ajouter du crédit (5 $ minimum) dans « Billing ». Compte moins d'1 centime par annonce.</p>
+    <label>Modèle <input id="openaiModel" type="text" placeholder="gpt-4.1-mini"></label>
+  </div>
+  <p class="hint">Les clés restent enregistrées uniquement sur cet appareil.</p>
   <button id="btnSaveSettings" class="btn primary">Enregistrer</button>
 </section>
 
@@ -147,13 +163,29 @@ function toast(msg) {
 }
 
 // ---------- réglages ----------
+let provider = store.get('provider', 'gemini');
+const OPENAI_DEFAULT = 'gpt-4.1-mini';
 $('apiKey').value = store.get('apiKey', '');
 $('model').value = store.get('model', DEFAULT_MODEL);
-if (!$('apiKey').value) $('settings').classList.remove('hidden');
+$('openaiKey').value = store.get('openaiKey', '');
+$('openaiModel').value = store.get('openaiModel', OPENAI_DEFAULT);
+function setProvider(pv) {
+  provider = pv;
+  document.querySelectorAll('.prov').forEach((b) => b.classList.toggle('on', b.dataset.prov === pv));
+  $('geminiBox').classList.toggle('hidden', pv !== 'gemini');
+  $('openaiBox').classList.toggle('hidden', pv !== 'openai');
+}
+document.querySelectorAll('.prov').forEach((b) => (b.onclick = () => setProvider(b.dataset.prov)));
+setProvider(provider);
+const currentKey = () => (provider === 'openai' ? $('openaiKey') : $('apiKey')).value.trim();
+if (!currentKey()) $('settings').classList.remove('hidden');
 $('btnSettings').onclick = () => $('settings').classList.toggle('hidden');
 $('btnSaveSettings').onclick = () => {
   store.set('apiKey', $('apiKey').value.trim());
   store.set('model', $('model').value.trim() || DEFAULT_MODEL);
+  store.set('openaiKey', $('openaiKey').value.trim());
+  store.set('openaiModel', $('openaiModel').value.trim() || OPENAI_DEFAULT);
+  store.set('provider', provider);
   $('settings').classList.add('hidden');
   updateGenerateBtn();
   toast('Réglages enregistrés');
@@ -194,7 +226,7 @@ async function addFiles(list) {
     if (!f.type.startsWith('image/') || photos.length >= MAX_PHOTOS) continue;
     try {
       const full = await resizeImage(f, 1600, 0.9);
-      const ai = (await resizeImage(f, 1024, 0.85)).split(',')[1];
+      const ai = (await resizeImage(f, 768, 0.8)).split(',')[1];
       photos.push({ name: `vinted-${Date.now()}-${photos.length + 1}.jpg`, full, ai });
     } catch (e) { setStatus(e.message, true); }
   }
@@ -214,9 +246,9 @@ function renderThumbs(save = true) {
 }
 
 function updateGenerateBtn() {
-  const hasKey = !!$('apiKey').value.trim();
+  const hasKey = !!currentKey();
   $('btnGenerate').disabled = !photos.length || !hasKey;
-  if (photos.length && !hasKey) setStatus('Ajoute ta clé Gemini dans les réglages ⚙️', true);
+  if (photos.length && !hasKey) setStatus(`Ajoute ta clé ${provider === 'openai' ? 'OpenAI' : 'Gemini'} dans les réglages ⚙️`, true);
   else if ($('genStatus').classList.contains('err')) setStatus('');
 }
 function setStatus(msg, isErr = false) { $('genStatus').textContent = msg; $('genStatus').classList.toggle('err', isErr); }
@@ -248,9 +280,12 @@ async function callGemini(model, key, notes) {
     body: JSON.stringify({
       contents: [{ parts: [
         { text: buildPrompt(notes) },
-        ...photos.slice(0, 6).map((p) => ({ inline_data: { mime_type: 'image/jpeg', data: p.ai } })),
+        ...photos.slice(0, 4).map((p) => ({ inline_data: { mime_type: 'image/jpeg', data: p.ai } })),
       ] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.4 },
+      generationConfig: {
+        responseMimeType: 'application/json', temperature: 0.4,
+        ...(/2\.5-flash/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {}), // pas de « réflexion » = bien plus rapide
+      },
     }),
   });
   const data = await res.json().catch(() => ({}));
@@ -261,7 +296,37 @@ async function callGemini(model, key, notes) {
   return Array.isArray(json) ? json[0] : json;
 }
 
+async function callOpenAI(model, key, notes) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: buildPrompt(notes) },
+        ...photos.slice(0, 4).map((p) => ({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + p.ai, detail: 'low' } })),
+      ] }],
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(data?.error?.message || `Erreur ${res.status}`);
+    e.status = res.status; e.code = data?.error?.code; e.openai = true; throw e;
+  }
+  const text = data.choices?.[0]?.message?.content || '';
+  if (!text) throw new Error("L'IA n'a rien renvoyé. Réessaie avec d'autres photos.");
+  const json = JSON.parse(text.replace(/^```(json)?|```$/g, '').trim());
+  return Array.isArray(json) ? json[0] : json;
+}
+
 function explainError(e) {
+  if (e?.openai) {
+    if (e.status === 401) return '❌ Clé OpenAI invalide. Vérifie-la dans les réglages ⚙️';
+    if (e.code === 'insufficient_quota') return '❌ Pas de crédit sur ton compte OpenAI : ajoute-en dans « Billing » sur platform.openai.com';
+    if (e.status === 404) return '❌ Modèle GPT introuvable. Mets « gpt-4.1-mini » dans les réglages ⚙️';
+    if (e.status === 429) return '⏳ Trop de demandes d\'un coup, réessaie dans une minute.';
+  }
   const msg = e?.message || String(e);
   if (e?.status === 400 && /api key/i.test(msg)) return '❌ Clé Gemini invalide. Vérifie-la dans les réglages ⚙️';
   if (e?.status === 403) return '❌ Clé refusée par Google. Recrée une clé sur aistudio.google.com/apikey';
@@ -273,12 +338,33 @@ function explainError(e) {
   return '❌ ' + msg;
 }
 
+let chrono;
+function startChrono(label) {
+  const t0 = Date.now(); clearInterval(chrono);
+  const tick = () => setStatus(`${label} ${Math.round((Date.now() - t0) / 1000)} s`);
+  tick(); chrono = setInterval(tick, 1000);
+}
+function done(ad) {
+  clearInterval(chrono);
+  showAd(ad); saveHistory(ad);
+  setStatus('✅ Annonce prête ! Vérifie-la ci-dessous.');
+  $('btnGenerate').disabled = false;
+  $('result').scrollIntoView({ behavior: 'smooth' });
+}
+
 $('btnGenerate').onclick = async () => {
+  if (provider === 'openai') {
+    $('btnGenerate').disabled = true;
+    startChrono('✨ GPT regarde tes photos…');
+    const model = $('openaiModel').value.trim() || OPENAI_DEFAULT;
+    try { return done(await callOpenAI(model, currentKey(), $('notes').value.trim())); }
+    catch (e) { clearInterval(chrono); $('btnGenerate').disabled = false; setStatus(explainError(e), true); return; }
+  }
   const key = $('apiKey').value.trim();
   const preferred = $('model').value.trim() || DEFAULT_MODEL;
   const models = [preferred, ...FALLBACK_MODELS.filter((m) => m !== preferred)];
   $('btnGenerate').disabled = true;
-  setStatus('✨ L\'IA regarde tes photos…');
+  startChrono('✨ L\'IA regarde tes photos…');
   let lastErr;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   outer: for (const m of models) {
@@ -286,22 +372,19 @@ $('btnGenerate').onclick = async () => {
       try {
         const ad = await callGemini(m, key, $('notes').value.trim());
         if (m !== preferred) { $('model').value = m; store.set('model', m); }
-        showAd(ad); saveHistory(ad);
-        setStatus('✅ Annonce prête ! Vérifie-la ci-dessous.');
-        $('btnGenerate').disabled = false;
-        $('result').scrollIntoView({ behavior: 'smooth' });
-        return;
+        return done(ad);
       } catch (e) {
         lastErr = e;
         const surcharge = [500, 503, 429].includes(e.status) || /high demand|overloaded|unavailable/i.test(e.message);
         if (e.status === 404) continue outer;          // modèle inexistant → suivant
         if (!surcharge) break outer;                    // vraie erreur (clé...) → on arrête
-        if (essai === 0) { setStatus('⏳ IA de Google surchargée, nouvel essai…'); await sleep(3000); continue; }
-        setStatus('⏳ IA surchargée, j\'essaie un autre modèle…');
+        if (essai === 0) { startChrono('⏳ IA de Google surchargée, nouvel essai…'); await sleep(3000); continue; }
+        startChrono('⏳ IA surchargée, autre modèle…');
         continue outer;
       }
     }
   }
+  clearInterval(chrono);
   $('btnGenerate').disabled = false;
   setStatus(explainError(lastErr), true);
 };
